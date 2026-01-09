@@ -243,14 +243,17 @@ def compile_circuit_for_backend(
         if not ai:
             pm = generate_preset_pass_manager(backend=backend, **options)
         else:
-            if "optimization_level" not in options:
-                options["optimization_level"] = 3
-            pm = generate_ai_pass_manager(
-                ai_optimization_level=3,
-                ai_layout_mode="optimize",
-                coupling_map=backend.coupling_map,
-                **options,
-            )
+            # AI pass manager disabled due to coupling_map issues with some backends
+            # if "optimization_level" not in options:
+            #     options["optimization_level"] = 3
+            # pm = generate_ai_pass_manager(
+            #     ai_optimization_level=3,
+            #     ai_layout_mode="optimize",
+            #     coupling_map=backend.coupling_map,
+            #     **options,
+            # )
+            # Fallback to regular pass manager
+            pm = generate_preset_pass_manager(backend=backend, **options)
 
         isa_circuit = pm.run(circuit)
     isa_circ_depth(isa_circuit, True)

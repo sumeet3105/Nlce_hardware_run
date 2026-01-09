@@ -43,8 +43,8 @@ def train_and_save(n_qubits: int, J: float, dirname: str, dry_run: bool):
 
 
 dry_run = False
-J_range = (1.0, 0.8)
-for n_qubits in (8,):
+J_range = (0.9,)
+for n_qubits in (5, 4):
     for J in J_range:
         dirname = f"gs_vqe_{int(J*100)}j"
         train_and_save(n_qubits, J, dirname, dry_run)

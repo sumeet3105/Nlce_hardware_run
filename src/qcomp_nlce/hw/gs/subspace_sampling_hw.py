@@ -66,7 +66,7 @@ def measure_ground_state_energy_estimator(
             circuit=circuit,
             n_shots=n_shots,
         )
-        energy, std = mean_std_tuples_from_res(job.result())
+        energy, std = mean_std_tuples_from_res(job.result())[0]
         bn = backend.name
     elif which_backend == "statevector_shots":
         res0 = sv_estimate_observables(
@@ -90,18 +90,18 @@ def measure_ground_state_energy_estimator(
 
         bn = which_backend
 
-    elif which_backend == "real_hardware":
+    elif which_backend == "real_backend":
         backend = get_backend(circuit.num_qubits, provider_name)
 
         job = backend_estimate(
-            backend=backend_name,
+            backend=backend,
             observables=hamiltonian,
             parameters=None,
             circuit=circuit,
             n_shots=n_shots,
         )
 
-        energy, std = mean_std_tuples_from_res(job.result())
+        energy, std = mean_std_tuples_from_res(job.result())[0]
         bn = backend.name
 
     print(f"{bn} -- estimated energy: {energy:.5f}, err {relerr(energy):.5f}")
@@ -385,8 +385,9 @@ def run_all(
 def load_which(dirname: Path, which: Literal["sweep", "vqe"]):
     if which == "vqe":
         hamiltonian, circuit, weights, ground_energy = load_optimized_vqe(dirname)
-        circuit = apply_parameters(circuit)
         parameters = weights[-1]
+        circuit = apply_parameters(circuit, parameters)
+        
     elif which == "sweep":
         hamiltonian, circuit, ground_energy = load_sweep(dirname)
 
@@ -400,18 +401,18 @@ if __name__ == "__main__":
     run_on_hardware = True
     backend_name = "AQT"
     n_shots = 1e3
-    if which == "sweep":
+    # if which == "sweep":
+    #     run_all(
+    #         "5q_3q_gs_aqt_midway",
+    #         edm,
+    #         run_on_hardware,
+    #         which=which,
+    #         backend_name=backend_name,
+    #         n_shots=n_shots,
+    #     )
+    if which == "vqe":
         run_all(
-            "9q_10q_gs_aqt_midway",
-            edm,
-            run_on_hardware,
-            which=which,
-            backend_name=backend_name,
-            n_shots=n_shots,
-        )
-    elif which == "vqe":
-        run_all(
-            "9q_10q_gs",
+            "5q_3q_gs",
             edm,
             run_on_hardware,
             which=which,
