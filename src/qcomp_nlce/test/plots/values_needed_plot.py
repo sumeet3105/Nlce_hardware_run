@@ -3,6 +3,7 @@ from qcomp_nlce.utils import heff_n_expectation_values_2d
 
 import matplotlib.pyplot as plt
 
+
 x = range(3, 100)
 y = []
 z = []

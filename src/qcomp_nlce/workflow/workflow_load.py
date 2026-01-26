@@ -1,76 +1,15 @@
 import copy
 from data_manager import ExperimentDataManager
-from qcomp_nlce.utils.workflow_1d import (
+from Nlce_hardware_run.src.qcomp_nlce.utils.workflow_tfim_1d import (
     heff_backend_type,
     dispersion_all_backends,
     plot_all_backends_dispersions_montecarlo,
 )
 
-from qcomp_nlce.utils.stats import mean_std, mc_disp_from_res_dict
+from qcomp_nlce.utils.results import average_result_matrices
 
 import matplotlib.pyplot as plt
 import numpy as np
-
-
-def plot_average_matrices(dicts: list[dict]) -> dict:
-
-    n_dicts = len(dicts)
-
-    out_d = copy.deepcopy(dicts[0])
-    ks = out_d["inputs"]["ks"]
-    out_d["inputs"]["n_shots"] = 2000 * n_dicts
-
-    for si in ("dict_l", "dict_s"):
-        for backend in out_d["results"]["vqe"][si]["eld"]:
-            if backend != "system":
-                for mnd in ("eld", "exd"):
-                    out_d["results"]["vqe"][si][mnd][backend]["values"] = np.mean(
-                        list(
-                            d["results"]["vqe"][si][mnd][backend]["values"]
-                            for d in dicts
-                        ),
-                        axis=0,
-                    )
-                    out_d["results"]["vqe"][si][mnd][backend]["stds"] = mean_std(
-                        list(
-                            d["results"]["vqe"][si][mnd][backend]["stds"] for d in dicts
-                        ),
-                        axis=0,
-                    )
-
-                out_d["results"]["vqe"][si]["gsd"][backend]["energy"] = np.mean(
-                    np.array(
-                        list(
-                            d["results"]["vqe"][si]["gsd"][backend]["energy"]
-                            for d in dicts
-                        )
-                    )
-                )
-                out_d["results"]["vqe"][si]["gsd"][backend]["std"] = mean_std(
-                    np.array(
-                        list(
-                            d["results"]["vqe"][si]["gsd"][backend]["std"]
-                            for d in dicts
-                        )
-                    )
-                )
-
-    for si in ("dict_l", "dict_s"):
-        for backend in out_d["results"]["vqe"][si]["eld"]:
-            if backend != "system":
-                eld = out_d["results"]["vqe"][si]["eld"]
-                gsd = out_d["results"]["vqe"][si]["gsd"]
-                exd = out_d["results"]["vqe"][si]["exd"]
-                heff = heff_backend_type(eld, gsd, exd, backend)
-                out_d["results"]["vqe"][si]["heff"][backend] = heff
-        disp = dispersion_all_backends(
-            out_d["results"]["vqe"]["dict_l"], out_d["results"]["vqe"]["dict_s"], ks
-        )
-    out_d["results"]["vqe"]["disp"] = disp
-    n_mc_samples = int(1e4)
-    mc_disp = mc_disp_from_res_dict(ks, out_d, "vqe", n_mc_samples)
-    out_d["results"]["vqe"]["mc_disp"] = mc_disp
-    return out_d
 
 
 def plot_average_over_runs():
@@ -85,17 +24,10 @@ def plot_average_over_runs():
         d = edm.load_last_saved_data_file
         dicts.append(d)
 
-    out_d = plot_average_matrices(dicts)
+    out_d = average_result_matrices(dicts)
 
     fig = plot_all_backends_dispersions_montecarlo(out_d)
 
-    plt.show()
-
-
-def load_and_plot(fpath):
-    edm = ExperimentDataManager.load(fpath)
-    d = edm.load_last_saved_data_file
-    fig = plot_all_backends_dispersions_UT(d)
     plt.show()
 
 

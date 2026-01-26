@@ -15,7 +15,10 @@ def prod_std(stds: np.ndarray, vals: np.ndarray) -> float:
 
 def sum_std(stds: np.ndarray, axis: int = 0) -> float:
     stds = np.array(stds)
-    return np.sqrt(np.sum(stds**2, axis=axis))
+    sm = np.sqrt(np.sum(stds**2, axis=axis))
+    if sm.shape == (1,):
+        return sm[0]
+    return sm
 
 
 def mean_std(stds: np.ndarray, axis: int = 0) -> float:
@@ -107,19 +110,26 @@ def get_heff_mc_sampler(
     return sampler
 
 
-def res_dict_sampler(_d: dict, circ: ALGORITHMS_ALIAS) -> dict[callable]:
+def res_dict_sampler(_d: dict, circ: ALGORITHMS_ALIAS, to_eotm: bool) -> dict[callable]:
+
+    # to_eotm: unfortunately,
+    # not all backends compute stds the same way
+    # so we need to set this by hand
+    # because otherwise we get the raw
+    # std and not the error on the mean (eotm)
+    # which is what we want
 
     res = _d["results"][circ]
     samplers = {}
 
-    # if the provider is v1
+    # if the provider is v1 or hadamard by sampler
     # the std is the std of the observable
     # and not the error on the mean
     # which is what we want to propagate
     # because we're not looking at the true distribution
     # but rather the distribution of the estimator
     fac = 1
-    if get_provider_version(_d["inputs"]["provider_name"]) == "v1":
+    if to_eotm:
         n_shots = _d["inputs"]["n_shots"]
         fac = 1 / np.sqrt(n_shots)
 
@@ -163,10 +173,11 @@ def mc_disp_from_res_dict(
     circ: ALGORITHMS_ALIAS,
     n_samples: int = 10000,
     sampler_opts: dict = {},
+    to_eotm: bool = False,
 ) -> dict:
 
     disps = {}
-    samplers = res_dict_sampler(_d, circ)
+    samplers = res_dict_sampler(_d, circ, to_eotm)
     for be in samplers:
         sampler = samplers[be]
         sampled = np.zeros((len(ks), n_samples))

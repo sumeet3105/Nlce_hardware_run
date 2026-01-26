@@ -130,6 +130,9 @@ def rebuild_matrices_from_tmp(l: TempListType, n: int) -> tuple[np.array, np.arr
 
 
 def tmp_filename(circuit: QuantumCircuit, which_backend: str):
+    if "tmpname" not in circuit.metadata.keys():
+        raise ValueError(f"You did not give a tmpname to the circuit: {circuit.name}")
+
     return f"{circuit.metadata['tmpname']}_{which_backend}"
 
 

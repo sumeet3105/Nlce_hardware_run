@@ -1,5 +1,6 @@
 from qiskit import QuantumCircuit
 from qiskit.circuit.gate import Gate
+from qiskit.circuit import ClassicalRegister
 from qiskit.quantum_info import Operator, SparsePauliOp
 import numpy as np
 from qcomp_nlce.utils.hamiltonian import from_bitstring, hamming_weight, index_bits
@@ -160,6 +161,34 @@ def circuit_matrix_elements(circuit: QuantumCircuit, states: list[str]) -> np.nd
         for state in states
     ]
     return mat[np.ix_(sl, sl)]
+
+
+def measure_pauli_circuit(
+    circ: QuantumCircuit, pauli: SparsePauliOp, copy: bool = True
+) -> QuantumCircuit:
+    pauli_str = "".join(reversed(str(pauli.paulis[0])))
+
+    if copy:
+        circ2 = circ.copy()
+    else:
+        circ2 = circ
+
+    inds = []
+
+    for ind, val in enumerate(pauli_str):
+        if val != "I":
+            if val == "X":
+                circ2.h(ind)
+            elif val == "Y":
+                circ2.sdg(ind)
+                circ2.h(ind)
+            inds.append(ind)
+    for x in range(len(inds) - 1, 0, -1):
+        circ2.cx(inds[x], inds[x - 1])
+    creg = ClassicalRegister(1, name=f"__c_{pauli_str}")
+    circ2.add_register(creg)
+    circ2.measure(inds[0], creg[0])
+    return circ2
 
 
 def prep_circ_superpos(x: str, y: str, which: Literal["+", "-", "+i", "-i"]):

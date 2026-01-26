@@ -7,6 +7,8 @@ from qcomp_nlce.utils import (
     TFIM,
     optimize_circuit,
     save_optimized_vqe,
+    load_optimized_vqe,
+    get_save_directory,
     estimate_observable_1qp_initial_state,
     get_tfim_sweep_circuit,
     circuit_to_matrix,
@@ -82,6 +84,7 @@ def get_cost_sweep(
 def train_and_save(
     n_qubits: int,
     J: float,
+    hl: float,
     dirname: str,
     which_cost: str,
     dry_run: bool,
@@ -90,10 +93,10 @@ def train_and_save(
     print(f"{n_qubits} qubits, J/h={J}")
     periodic = False
     h = 1
-    ham_j, ham_h = TFIM(n_qubits, h, J, periodic=False, split_parts=True)
+    ham_j, ham_h = TFIM(n_qubits, h, J, periodic=False, split_parts=True, longitudinal_field=0.1)
     hamiltonian = ham_j + ham_h
     if n_layers is None:
-        n_layers = get_optimal_n_layers(hamiltonian.num_qubits)
+        n_layers = 2*get_optimal_n_layers(hamiltonian.num_qubits)
     circuit = get_hva_vqe(hamiltonian, n_layers=n_layers, unique_weights=True)
 
     # circuit = get_custom_vqe(4, n_layers=2)
@@ -108,11 +111,21 @@ def train_and_save(
 
     print(f"The circuit depth is {circuit.depth()}")
     print(f"The number of parameters is {len(circuit.parameters)}")
+
+    # Load optimized parameters from ground state VQE
+    gs_dirname = f"gs_vqe_{int(J*100)}j_{int(hl*100)}hl"
+    gs_vqe_path = get_save_directory(f"{gs_dirname}/vqe/{n_qubits}q_{n_layers}l")
+    _, _, gs_weights, _ = load_optimized_vqe(gs_vqe_path)
+    initial_params = np.real(gs_weights[-1])  # Take the last (final optimized) set of parameters
+    # print(initial_params.shape)
+    # # Original initial_params setup:
+    # initial_params = 0.1 * np.ones((len(circuit.parameters),))
+
     cost_values, params = optimize_circuit(
         circuit,
         hamiltonian,
         cost=cost,
-        initial_params=0.1 * np.ones((len(circuit.parameters),)),
+        initial_params=initial_params,
     )
     print(f"final cost is {np.abs(cost_values[-1])}")
 
@@ -125,12 +138,14 @@ def train_and_save(
         dry_run,
     )
 
-
+hl=0.1
 # input here "offdiag" or "sweep"
 if __name__ == "__main__":
     dry_run = False
     which_cost = "offdiag"
-    for n_qubits in (2,):
-        for J in (1.0,):
-            dirname = f"elem_vqe_{int(J*100)}j"
-            train_and_save(n_qubits, J, dirname, which_cost, dry_run)
+    for n_qubits in (5,):
+        for J in (0.8,):
+            dirname = f"elem_vqe_{int(J*100)}j_{int(hl*100)}hl"
+            train_and_save(n_qubits, J, hl, dirname, which_cost, dry_run)
+
+

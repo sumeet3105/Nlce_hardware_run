@@ -17,11 +17,11 @@ def w_circ(n_qubits: int):
 
 
 def hardware_run():
-    n_qubits = 4
+    n_qubits = 8
     circ = w_circ(n_qubits)
     edm = ExperimentDataManager("w_test_all_backends", project="nlce", dry_run=False)
 
-    for provider_name, n_shots in (("QEXA", int(1e3)),):
+    for provider_name, n_shots in (("IQM", int(2e4)),):
         backend = get_backend(n_qubits, provider_name)
         job = backend_sample(backend, circ, None, n_shots)
         counts = get_counts_from_res(job.result(), n_qubits, 0)

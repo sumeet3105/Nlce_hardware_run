@@ -46,5 +46,10 @@ regs2 = layout2.get_registers()
 # True
 assert layout == layout2
 
+
+layout.add_register(q1)
+layout.add_register(q2)
+layout.add_register(q3)
+
 # False
 assert regs == regs2

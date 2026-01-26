@@ -7,6 +7,15 @@ from qiskit_ibm_runtime import EstimatorV2, SamplerV2
 from qiskit_ibm_runtime.base_runtime_job import BaseRuntimeJob
 from qiskit.primitives import EstimatorResult, PrimitiveResult
 from qiskit_ibm_transpiler import generate_ai_pass_manager
+from iqm.iqm_client import CircuitCompilationOptions
+from iqm.iqm_client.models import HeraldingMode, DDMode
+
+from qiskit.providers.fake_provider import GenericBackendV2
+from qcomp_nlce.utils.iqm_utils import (
+    IQMFakePerfect,
+    IQMFakePrettyGood,
+    IQMFakeReallyGood,
+)
 
 try:
     from iqm.qiskit_iqm.fake_backends.fake_deneb import (
@@ -24,6 +33,7 @@ from iqm.qiskit_iqm.fake_backends.fake_aphrodite import IQMFakeAphrodite
 from iqm.qiskit_iqm.fake_backends.iqm_fake_backend import IQMFakeBackend
 from iqm.qiskit_iqm import IQMProvider, IQMBackend, IQMJob
 
+
 import io
 
 from qiskit_ibm_runtime.fake_provider import (
@@ -36,7 +46,6 @@ from typing import Literal, Union
 
 from qiskit import transpile
 from qiskit.primitives.base import SamplerResult
-
 
 try:
     from qiskit_aqt_provider import AQTProvider
@@ -59,10 +68,10 @@ except ModuleNotFoundError:
 
 
 try:
-
+    raise Exception
     from mqp.qiskit_provider import MQPProvider, MQPBackend
 
-except ModuleNotFoundError:
+except Exception:
     print("mqp.qiskit_provider not found")
     # https://munich-quantum-software-stack.github.io/MQSS-Interfaces/qiskit/user_guide/getting_started/#usage
     try:
@@ -77,13 +86,19 @@ except ModuleNotFoundError:
         raise e
 
 
+class NotABackend: ...
+
+
 from qiskit_ibm_runtime.fake_provider.fake_backend import FakeBackendV2
 
 from qcomp_nlce.utils.circuit import (
     isa_circuit_param_dict,
     parameters_dict,
     parameters_exist,
+    circ_stats,
+    measure_pauli_circuit,
 )
+from qcomp_nlce.utils.hamiltonian import get_tfim_ratio, get_tfim_xx, HAM_NAME_VAR
 from qiskit_ibm_runtime import QiskitRuntimeService, IBMBackend
 
 BACKEND_TYPES = Literal["statevector", "fake_backend", "real_backend"]
@@ -92,7 +107,16 @@ BACKEND_ALIAS = (
     Literal["statevector"] | FakeBackendV2 | IBMBackend | MQPBackend | IQMBackend
 )
 
-PROVIDER_ALIAS = Literal["IBM", "AQT", "IQM", "QEXA"]
+PROVIDER_ALIAS = Literal[
+    "IBM",
+    "AQT",
+    "IQM",
+    "QEXA",
+    "IBM_GENERIC",
+    "IQM_PERFECT",
+    "IQM_REALLYGOOD",
+    "IQM_PRETTYGOOD",
+]
 
 
 def get_aqt_backend(n_qubits: int) -> MQPBackend:
@@ -118,13 +142,15 @@ def get_iqm_backend(n_qubits: int) -> "IQMBackend":
         device_name = "garnet"
     else:
         device_name = "emerald"
-    url = f"https://cocos.resonance.meetiqm.com/{device_name}"
-    return IQMProvider(url, token=get_token("IQM")).get_backend()
+    url = f"https://resonance.meetiqm.com/"
+    return IQMProvider(
+        url, token=get_token("IQM"), quantum_computer=device_name
+    ).get_backend()
 
 
 def get_ibm_backend(n_qubits: int) -> IBMBackend:
     token = get_token("IBM")
-    service = QiskitRuntimeService(channel="ibm_quantum", token=token)
+    service = QiskitRuntimeService(channel="ibm_quantum_platform", token=token)
     real_backend = service.least_busy(
         simulator=False, operational=True, min_num_qubits=n_qubits
     )
@@ -173,8 +199,21 @@ def get_appropriate_fake_backend(
             return IQMFakeGarnet()
         else:
             return IQMFakeAphrodite()
+    elif which == "IBM_GENERIC":
+        # I should've made the backend calling
+        # after the circuit is created
+        # because you might add ancillas and such
+        # and this isn't taken into account here
+        n_qubits += 4
+        return GenericBackendV2(n_qubits)
+    elif which == "IQM_PRETTYGOOD":
+        return IQMFakePrettyGood()
+    elif which == "IQM_REALLYGOOD":
+        return IQMFakeReallyGood()
+    elif which == "IQM_PERFECT":
+        return IQMFakePerfect()
     else:
-        raise ValueError(f"Expected a provider got: {which}")
+        raise ValueError(f"Expected a provider, got: {which}")
 
 
 def mean_std_tuples_from_res(
@@ -192,31 +231,35 @@ def mean_std_tuples_from_res(
     return out
 
 
-def isa_circ_depth(isa_circ: list | QuantumCircuit, verbose: bool = False):
-    if isinstance(isa_circ, list):
-        if len(isa_circ) == 1:
-            depths = [isa_circ[0].depth()]
-            if verbose:
-                print(f"Circuit depth is {isa_circ[0].depth()}")
-        else:
-            depths = [c.depth() for c in isa_circ]
-            mean_depth = np.mean(depths)
-            max_depth = np.max(depths)
-            if verbose:
-                print(
-                    f"Mean circuit depth ({len(isa_circ)} circuits): {mean_depth}, max: {max_depth}"
-                )
+def compute_mean_circ_stats(circs: list | QuantumCircuit, verbose: bool = False):
 
-    elif isinstance(isa_circ, QuantumCircuit):
-        if verbose:
-            depths = [isa_circ.depth()]
-            print(f"Circuit depth is {depths[0]}")
+    if isinstance(circs, QuantumCircuit):
+        circ_list = [circs]
+    elif isinstance(circs, list):
+        circ_list = circs
+
     else:
-        raise ValueError(
-            f"circ is neither QuantumCircuit nor list, but: {type(isa_circ)}"
+        raise ValueError(f"circ is neither QuantumCircuit nor list, but: {type(circs)}")
+
+    d_arr = []
+    n_gates_arr = []
+    nlg_arr = []
+    for isa_c in circ_list:
+        depth, n_gates, n_non_local_gates = circ_stats(isa_c)
+        d_arr.append(depth)
+        n_gates_arr.append(n_gates)
+        nlg_arr.append(n_non_local_gates)
+
+    mean_depth = np.mean(d_arr)
+    mean_n_gates = np.mean(n_gates_arr)
+    mean_nlg = np.mean(nlg_arr)
+
+    if verbose:
+        print(
+            f"depth {mean_depth}, total gates: {mean_n_gates}, nonlocal (k>=2) gates: {mean_nlg} (mean of {len(circ_list)} circuits(s))"
         )
 
-    return depths
+    return mean_depth, mean_n_gates, mean_nlg
 
 
 def is_hardware_run(which_backend: str):
@@ -227,10 +270,10 @@ def compile_circuit_for_backend(
     circuit: QuantumCircuit,
     backend: BACKEND_ALIAS,
     options: dict = {},
-    ai: bool = True,
+    ai: bool = False,
 ):
     # IQMBackend, IQMFakeBackend
-    if isinstance(backend, (MQPBackend)):
+    if isinstance(backend, (IQMBackend, IQMFakeBackend)):
         initial_layout = list(range(circuit.num_qubits))
         isa_circuit = transpile(
             circuit,
@@ -238,26 +281,45 @@ def compile_circuit_for_backend(
             initial_layout=initial_layout,
             optimization_level=3,
             coupling_map=backend.coupling_map,
+            scheduling_method="move_routing_rz_optimization_ignores_barriers",
         )
+        # isa_circuit = transpile_to_IQM(
+        #     circuit,
+        #     backend=backend,
+        #     optimization_level=3,
+        #     perform_move_routing=True,
+        #     optimize_single_qubits=True,
+        #     remove_final_rzs=True,
+        #     initial_layout=initial_layout,
+        #     coupling_map=backend.coupling_map,
+        # )
     else:
         if not ai:
             pm = generate_preset_pass_manager(backend=backend, **options)
         else:
-            # AI pass manager disabled due to coupling_map issues with some backends
-            # if "optimization_level" not in options:
-            #     options["optimization_level"] = 3
-            # pm = generate_ai_pass_manager(
-            #     ai_optimization_level=3,
-            #     ai_layout_mode="optimize",
-            #     coupling_map=backend.coupling_map,
-            #     **options,
-            # )
-            # Fallback to regular pass manager
-            pm = generate_preset_pass_manager(backend=backend, **options)
+            if "optimization_level" not in options:
+                options["optimization_level"] = 3
+
+            # never put coupling_map instead of backend
+            # it will generate better circuit
+            # but they will be broken
+            pm = generate_ai_pass_manager(
+                ai_optimization_level=3,
+                ai_layout_mode="optimize",
+                backend=backend,
+                **options,
+            )
 
         isa_circuit = pm.run(circuit)
-    isa_circ_depth(isa_circuit, True)
+    compute_mean_circ_stats(isa_circuit, True)
     return isa_circuit
+
+
+def get_backend_name(backend: BACKEND_ALIAS) -> str:
+    if backend == "statevector":
+        return backend
+    else:
+        return backend.name
 
 
 def circuits_to_sampler_payload(
@@ -269,10 +331,12 @@ def circuits_to_sampler_payload(
     if isinstance(circuit, QuantumCircuit):
         circuit = [circuit]
 
-    isa_circuit = [
-        compile_circuit_for_backend(c, backend, {"optimization_level": 3})
-        for c in circuit
-    ]
+    options = {
+        "optimization_level": 3,
+        "initial_layout": list(range(circuit[0].num_qubits)),
+    }
+
+    isa_circuit = [compile_circuit_for_backend(c, backend, options) for c in circuit]
     if which == "v1":
 
         payload = []
@@ -380,14 +444,22 @@ def circuits_to_estimator_payload(
 
 
 def get_backend_sampler(
-    backend,
+    backend: BACKEND_ALIAS,
 ) -> SamplerV2 | AQTSampler:
 
     if isinstance(backend, AQTResource):
         sampler = AQTSampler(backend)
 
     elif isinstance(
-        backend, (IBMBackend, FakeBackendV2, IQMFakeBackend, IQMBackend, MQPBackend)
+        backend,
+        (
+            IBMBackend,
+            FakeBackendV2,
+            IQMFakeBackend,
+            IQMBackend,
+            MQPBackend,
+            GenericBackendV2,
+        ),
     ):
         sampler = SamplerV2(mode=backend)
     else:
@@ -404,19 +476,35 @@ def backend_sample(
 
     sampler = get_backend_sampler(backend)
 
-    if isinstance(backend, (IBMBackend, FakeBackendV2)):
+    if isinstance(
+        backend,
+        (IBMBackend, FakeBackendV2, GenericBackendV2),
+    ):
 
         payload = circuits_to_sampler_payload(backend, circuit, parameters, which="v2")
+
         job = sampler.run(
             payload,
             shots=int(n_shots),
+        )
+
+    elif isinstance(backend, (IQMBackend, IQMFakeBackend, MQPBackend)):
+        payload = circuits_to_sampler_payload(backend, circuit, parameters, which="v1")
+
+        job = backend.run(
+            payload,
+            shots=int(n_shots),
+            circuit_compilation_options=CircuitCompilationOptions(
+                heralding_mode=HeraldingMode.ZEROS,
+                dd_mode=DDMode.ENABLED,
+            ),
         )
 
     elif isinstance(backend, AQTResource):
         payload = circuits_to_sampler_payload(backend, circuit, parameters, which="v1")
         job = sampler.run(payload, parameter_values=None, shots=n_shots)
 
-    elif isinstance(backend, (IQMFakeBackend, IQMBackend, MQPBackend)):
+    elif isinstance(backend, (NotABackend)):
         initial_layout = list(range(circuit.num_qubits))
         isa_circuits = transpile(
             circuit,
@@ -448,7 +536,8 @@ def backend_estimate(
 ) -> BaseRuntimeJob:
 
     # I believe only AQT now runs on V1, QExa can use V2 prims. (except the passmanager lol)
-    if isinstance(backend, (AQTResource)):
+    # need MQPBackend in there because the AQT real backend is provided by MQP
+    if isinstance(backend, (AQTResource, MQPBackend)):
         # can't replace it with EstimatorV1
         estimator = AQTEstimator(backend)
         estimator.set_transpile_options(optimization_level=3)
@@ -475,10 +564,11 @@ def backend_estimate(
     else:
         options = {}
         # avoid the warning when using a fakebackend
-        if not isinstance(backend, FakeBackendV2):
+        if not isinstance(backend, (FakeBackendV2, IQMFakeBackend)):
             if "resilience_level" not in options.keys():
                 options.update({"resilience_level": 2})
         estimator = EstimatorV2(backend, options=options)
+
         payload = circuits_to_estimator_payload(
             backend, circuit, parameters, observables
         )
@@ -488,6 +578,45 @@ def backend_estimate(
             precision=1 / np.sqrt(n_shots),
         )
     return job
+
+
+def sample_based_estimation(
+    backend: BACKEND_ALIAS,
+    circuit: QuantumCircuit,
+    hamiltonian: SparsePauliOp,
+    n_shots: int,
+) -> BaseRuntimeJob:
+    if HAM_NAME_VAR not in hamiltonian.__dict__:
+        raise ValueError("Expected the hamiltonian to have name")
+    if hamiltonian.__dict__[HAM_NAME_VAR] == "TFIM":
+        n_qubits = hamiltonian.num_qubits
+        # ZZZ
+        z_circ = circuit.copy()
+        z_circ.measure_all()
+
+        # XX XX XX
+        # even
+
+        x_circ_even = circuit.copy()
+        even_paulis = get_tfim_xx(n_qubits, "even")
+        for pauli in even_paulis:
+            x_circ_even = measure_pauli_circuit(x_circ_even, pauli, False)
+
+        x_circ_odd = circuit.copy()
+        odd_paulis = get_tfim_xx(n_qubits, "odd")
+        for pauli in odd_paulis:
+            x_circ_odd = measure_pauli_circuit(x_circ_odd, pauli, False)
+
+        payload = circuits_to_sampler_payload(
+            backend, [z_circ, x_circ_even, x_circ_odd], None, "v1"
+        )
+        job = backend.run(payload, shots=n_shots)
+        return job
+
+    else:
+        raise ValueError(
+            f"Expected a valid name, got: {hamiltonian.__dict__[HAM_NAME_VAR]}"
+        )
 
 
 def get_token(which: Literal["IBM", "LRZ"]):

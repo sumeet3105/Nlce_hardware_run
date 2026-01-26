@@ -7,8 +7,16 @@ from qcomp_nlce.utils.measure import (
     circuit_sampling_job,
     get_counts_from_res,
     convert_count_keys,
+    std_from_shots,
+    trace_out_estimation,
 )
-from qcomp_nlce.utils.hamiltonian import index_bits, projector_ham, trace_dist
+from qcomp_nlce.utils.hamiltonian import (
+    index_bits,
+    projector_ham,
+    trace_dist,
+    get_tfim_ratio,
+    HAM_NAME_VAR,
+)
 from qcomp_nlce.utils.circuit import (
     to_controlled_gate,
     apply_parameters,
@@ -31,9 +39,13 @@ from qcomp_nlce.utils.unscented_transform import (
     vectorize_complex_func,
 )
 
-from qcomp_nlce.utils.hardware import is_hardware_run, BACKEND_ALIAS
+from qcomp_nlce.utils.hardware import (
+    is_hardware_run,
+    BACKEND_ALIAS,
+    sample_based_estimation,
+)
 
-from qcomp_nlce.utils.stats import sum_std
+from qcomp_nlce.utils.stats import sum_std, mean_std
 
 from qiskit.primitives import EstimatorResult, PrimitiveResult
 
@@ -319,21 +331,21 @@ def build_stefan_circuits_sample(
 ) -> QuantumCircuit:
     hadam_circuits = []
     n_qubits = circuit.num_qubits + 1
+
+    x_inds = index_bits(x, circuit.num_qubits, right_to_left=True)
+    y_inds = index_bits(y, circuit.num_qubits, right_to_left=True)
+
     for t in ("real", "imag"):
         hadam_circuit = QuantumCircuit(n_qubits)
         hadam_circuit.h(0)
-
-        x_inds = index_bits(x, circuit.num_qubits, right_to_left=True)
-        y_inds = index_bits(y, circuit.num_qubits, right_to_left=True)
+        if t == "imag":
+            hadam_circuit.sdg(0)
 
         for y in y_inds:
             hadam_circuit.cx(0, y + 1)
         hadam_circuit.append(apply_parameters(circuit, parameters), range(1, n_qubits))
         for x in x_inds:
             hadam_circuit.cx(0, x + 1)
-
-        if t == "imag":
-            hadam_circuit.s(0)
 
         hadam_circuit.h(0)
         hadam_circuit.measure_all()
@@ -351,6 +363,7 @@ def stefan_hadamard_test(
     y: str,
     backend: BACKEND_ALIAS = "statevector",
     counting_method: Literal["estimator", "samples"] = "estimator",
+    n_reps: int = 2,
 ):
 
     # this is Stefan Wolf's test, a bit modified though
@@ -370,12 +383,15 @@ def stefan_hadamard_test(
         jobs = circuit_estimation_job(
             backend=backend,
             observables=hams,
-            circuit=stef_circuit,
+            circuit=[
+                stef_circuit,
+            ]
+            * n_reps,
             parameters=None,
             n_shots=n_shots,
         )
 
-        ol, std = get_hadam_estimator(jobs.result())
+        ol, std = get_hadam_estimator(jobs.result(), n_reps)
         return ol, std
 
     elif counting_method == "samples":
@@ -453,7 +469,7 @@ def hadam_diff(
     if n0 == 0 and n1 == 0:
         return 0, 0
 
-    std = full_hadamard_std(n1, n0, n_shots)
+    std = std_from_shots(n1, n0, n_shots)
 
     return (n0 - n1) / n_shots, std
 
@@ -478,30 +494,39 @@ def circuit_with_init(
     return circ_out
 
 
-def get_hadam_estimator(res: EstimatorResult) -> tuple[complex, complex]:
+def get_hadam_estimator(
+    res: EstimatorResult, n_reps: int = 1
+) -> tuple[complex, complex]:
     # qiskit developers competing with python developers to see who can make the most breaking changes with a version chanege
     # anyway, here's wonderwall
+    if n_reps == 1:
+        try:
+            return (
+                res[0].data.evs[0] + 1j * res[0].data.evs[1],
+                res[0].data.stds[0] + 1j * res[0].data.stds[1],
+            )
 
-    try:
-        return (
-            res[0].data.evs[0] + 1j * res[0].data.evs[1],
-            res[0].data.stds[0] + 1j * res[0].data.stds[1],
-        )
+        except Exception:
+            return res.values[0] + 1j * res.values[1], np.sqrt(
+                res.metadata[0]["variance"]
+            ) + 1j * +np.sqrt(res.metadata[1]["variance"])
+    else:
+        vals_reps = []
+        stds_reps = []
+        for n in range(n_reps):
+            jj = 2 * n
+            if isinstance(res, EstimatorResult):
+                val = res.values[jj] + 1j * res.values[jj + 1]
+                std = np.sqrt(res.metadata[jj]["variance"]) + 1j * +np.sqrt(
+                    res.metadata[jj + 1]["variance"]
+                )
+            else:
+                val = res[n].data.evs[0] + 1j * res[n].data.evs[1]
+                std = res[n].data.stds[0] + 1j * res[n].data.stds[1]
 
-    except Exception:
-        return res.values[0] + 1j * res.values[1], np.sqrt(
-            res.metadata[0]["variance"]
-        ) + 1j * +np.sqrt(res.metadata[1]["variance"])
-
-
-def full_hadamard_std(n_1: int, n_0: int, n_shots: int) -> float:
-    if n_1 == 0 and n_0 == 0:
-        return 0
-    # <(Z x |0X0|)^2> - <(Z x |0X0|)>^2
-    # or simply <Z^2> - <Z>^2
-    t1 = (n_0 + n_1) / n_shots
-    t2 = ((n_0 - n_1) / (n_shots)) ** 2
-    return np.sqrt(t1 - t2)
+            vals_reps.append(val)
+            stds_reps.append(std)
+        return np.mean(vals_reps), mean_std(np.array(stds_reps))
 
 
 HADAMARD_TESTS = Literal["stefan", "projecto-estimo", "off-diag", "full", "estimator"]
@@ -535,14 +560,13 @@ def measure_matrix_element(
         )
         return ol, std
 
-    elif which_hadamard_test == "stefan":
+    elif which_hadamard_test == "stefan" or which_hadamard_test == "stefan_samples":
+        if which_hadamard_test == "stefan_samples":
+            counting_method = "samples"
+        else:
+            counting_method = "estimator"
         ol, std = stefan_hadamard_test(
-            circuit,
-            parameters,
-            n_shots,
-            x,
-            y,
-            backend,
+            circuit, parameters, n_shots, x, y, backend, counting_method=counting_method
         )
         return ol, std
 
@@ -652,13 +676,14 @@ def measure_matrix_elements(
     stds = np.zeros((len(comp_states), len(comp_states)), dtype=complex)
 
     on_hardware = is_hardware_run(which_backend)
-    filename = f"{tmp_filename(circuit,which_backend)}/measure_matrix_elements.json"
 
     if on_hardware:
+        filename = f"{tmp_filename(circuit,which_backend)}/measure_matrix_elements.json"
         try:
+
             computed_values = load_tmp_item(filename)
         except FileNotFoundError:
-            print("Starting from scratch (hadamard test)")
+            print(f"Starting from scratch (hadamard {which_hadamard_test} test)")
             computed_values = []
 
     if which_hadamard_test != "off-diag":
@@ -725,6 +750,85 @@ def measure_matrix_elements(
     return vals, stds
 
 
+def estimation_from_sample_based(
+    res: PrimitiveResult, hamiltonian: SparsePauliOp
+) -> tuple[complex, complex]:
+
+    if hamiltonian.__dict__[HAM_NAME_VAR] == "TFIM":
+        ratio = get_tfim_ratio(hamiltonian)
+        zs = []
+        z_stds = []
+        for ind_z in range(hamiltonian.num_qubits):
+            val, std = trace_out_estimation(res.get_counts()[0], ind_z)
+            zs.append(val)
+            z_stds.append(std)
+
+        n_even = len(list(res.get_counts()[1].keys())[0].replace(" ", ""))
+        n_odd = len(list(res.get_counts()[2].keys())[0].replace(" ", ""))
+
+        xxs_even = []
+        xxs_even_stds = []
+        xxs_odd = []
+        xxs_odd_stds = []
+        for ind_x_even in range(n_even):
+            val, std = trace_out_estimation(res.get_counts()[1], ind_x_even)
+            xxs_even.append(val)
+            xxs_even_stds.append(std)
+        for ind_x_odd in range(n_odd):
+            val, std = trace_out_estimation(res.get_counts()[2], ind_x_odd)
+            xxs_odd.append(val)
+            xxs_odd_stds.append(std)
+
+        fval = -sum(zs) + -ratio * (sum(xxs_even) + sum(xxs_odd))
+        fstd = np.sqrt(
+            sum_std(
+                [
+                    sum_std(z_stds),
+                    ratio * sum_std([sum_std(xxs_even_stds), sum_std(xxs_odd_stds)]),
+                ]
+            )
+        )
+
+    return fval, fstd
+
+
+def measure_hamiltonian_element_manual(
+    hamiltonian: SparsePauliOp,
+    circuit: QuantumCircuit,
+    x: str,
+    y: str,
+    parameters: np.ndarray,
+    backend: BACKEND_ALIAS,
+    n_shots: int,
+    n_reps: int = 1,
+) -> tuple[complex, complex]:
+    if x == y:
+        circ_out = QuantumCircuit(circuit.num_qubits)
+        x_inds = index_bits(x, circuit.num_qubits, right_to_left=True)
+        for x_ind in x_inds:
+            circ_out.x(x_ind)
+        circ_out.compose(circuit, inplace=True)
+        job = sample_based_estimation(backend, circ_out, hamiltonian, n_shots)
+        res = job.result()
+        return estimation_from_sample_based(res, hamiltonian)
+    else:
+        d = ["+", "-", "+i", "-i"]
+        stds = []
+        vals = []
+        for k in d:
+            circ_p = prep_circ_superpos(x, y, k)
+            circ_p.compose(circuit, inplace=True)
+            job = sample_based_estimation(backend, circ_p, hamiltonian, n_shots)
+            res = job.result()
+            val, std = estimation_from_sample_based(res, hamiltonian)
+            vals.append(val)
+            stds.append(std)
+
+        val = (vals[0] - vals[1]) / 2 + 1j * (vals[2] - vals[3]) / 2
+        std = sum_std(stds[0:2]) + 1j * sum_std(stds[2:4])
+        return val, std
+
+
 def measure_hamiltonian_element(
     hamiltonian: SparsePauliOp,
     circuit: QuantumCircuit,
@@ -733,6 +837,7 @@ def measure_hamiltonian_element(
     parameters: np.ndarray,
     backend: BACKEND_ALIAS,
     n_shots: int,
+    n_reps: int = 2,
 ) -> tuple[complex, complex]:
     if x == y:
         circ_out = QuantumCircuit(circuit.num_qubits)
@@ -740,43 +845,81 @@ def measure_hamiltonian_element(
         for x_ind in x_inds:
             circ_out.x(x_ind)
         circ_out.compose(circuit, inplace=True)
+        if n_reps > 1:
+            circ_out = [circ_out for _ in range(n_reps)]
         job = circuit_estimation_job(
             circ_out, [hamiltonian], parameters, backend, n_shots
         )
 
         res = job.result()
-        if isinstance(res, EstimatorResult):
-            return res.values[0], np.sqrt(res.metadata[0]["variance"])
+        if n_reps == 1:
+            if isinstance(res, EstimatorResult):
+                return res.values[0], np.sqrt(res.metadata[0]["variance"])
+            else:
+                return res[0].data.evs, res[0].data.stds
         else:
-            return res[0].data.evs, res[0].data.stds
+            if isinstance(res, EstimatorResult):
+                return np.mean([res.values[k] for k in range(n_reps)]), mean_std(
+                    np.array(
+                        [np.sqrt(res.metadata[k]["variance"]) for k in range(n_reps)]
+                    )
+                )
+            else:
+                return np.mean([res[k].data.evs for k in range(n_reps)]), mean_std(
+                    np.array([res[k].data.stds for k in range(n_reps)])
+                )
 
     else:
         d = ["+", "-", "+i", "-i"]
         circs = []
-        for k in d:
-            circ_p = prep_circ_superpos(x, y, k)
-            circ_p.compose(circuit, inplace=True)
-            circs.append(circ_p)
+        for _ in range(n_reps):
+            for k in d:
+                circ_p = prep_circ_superpos(x, y, k)
+                circ_p.compose(circuit, inplace=True)
+                circs.append(circ_p)
 
         job = circuit_estimation_job(circs, [hamiltonian], parameters, backend, n_shots)
 
         res = job.result()
+        if n_reps == 1:
+            if isinstance(res, EstimatorResult):
+                val = (res.values[0] - res.values[1]) / 2 + 1j * (
+                    res.values[2] - res.values[3]
+                ) / 2
+                stds = [np.sqrt(res.metadata[k]["variance"]) for k in range(4)]
+                std = sum_std(stds[0:2]) + 1j * sum_std(stds[2:4])
+                return val, std
 
-        if isinstance(res, EstimatorResult):
-            val = (res.values[0] - res.values[1]) / 2 + 1j * (
-                res.values[2] - res.values[3]
-            ) / 2
-            stds = [np.sqrt(res.metadata[k]["variance"]) for k in range(4)]
-            std = sum_std(stds[0:2]) + 1j * sum_std(stds[2:4])
-            return val, std
-
+            else:
+                val = (res[0].data.evs - res[1].data.evs) / 2 + 1j * (
+                    res[2].data.evs - res[3].data.evs
+                ) / 2
+                stds = [res[k].data.stds for k in range(4)]
+                std = sum_std(stds[0:2]) + 1j * sum_std(stds[2:4])
+                return val, std
         else:
-            val = (res[0].data.evs - res[1].data.evs) / 2 + 1j * (
-                res[2].data.evs - res[3].data.evs
-            ) / 2
-            stds = [res[k].data.stds for k in range(4)]
-            std = sum_std(stds[0:2]) + 1j * sum_std(stds[2:4])
-            return val, std
+            vals_reps = []
+            stds_reps = []
+            for n in range(n_reps):
+                jj = 4 * n
+                if isinstance(res, EstimatorResult):
+
+                    val = (res.values[jj] - res.values[jj + 1]) / 2 + 1j * (
+                        res.values[jj + 2] - res.values[jj + 3]
+                    ) / 2
+                    stds = [np.sqrt(res.metadata[jj + k]["variance"]) for k in range(4)]
+                    std = sum_std(stds[:2]) + 1j * sum_std(stds[2:4])
+
+                else:
+                    val = (res[jj].data.evs - res[jj + 1].data.evs) / 2 + 1j * (
+                        res[jj + 2].data.evs - res[jj + 3].data.evs
+                    ) / 2
+                    stds = [res[jj + k].data.stds for k in range(4)]
+                    std = sum_std(stds[0:2]) + 1j * sum_std(stds[2:4])
+                vals_reps.append(val)
+                stds_reps.append(std)
+
+            return np.mean(vals_reps), mean_std(np.array(stds_reps))
 
 
 def measure_hamiltonian_elements(
@@ -793,11 +936,11 @@ def measure_hamiltonian_elements(
     stds = np.zeros((len(states), len(states)), dtype=complex)
 
     on_hardware = is_hardware_run(which_backend)
-    filename = (
-        f"{tmp_filename(circuit,which_backend)}/measure_hamiltonian_elements.json"
-    )
 
     if on_hardware:
+        filename = (
+            f"{tmp_filename(circuit,which_backend)}/measure_hamiltonian_elements.json"
+        )
         try:
             computed_values = load_tmp_item(filename)
         except FileNotFoundError:
@@ -811,9 +954,14 @@ def measure_hamiltonian_elements(
                 pass
                 print(f"Already computed {ind_x}, {ind_y}")
             else:
-                val, std = measure_hamiltonian_element(
-                    hamiltonian, circuit, x, y, parameters, backend, n_shots
-                )
+                if backend != "statevector" and "IQM" in backend.name:
+                    val, std = measure_hamiltonian_element_manual(
+                        hamiltonian, circuit, x, y, parameters, backend, n_shots
+                    )
+                else:
+                    val, std = measure_hamiltonian_element(
+                        hamiltonian, circuit, x, y, parameters, backend, n_shots
+                    )
                 vals[ind_x, ind_y] = val.conj()
                 vals[ind_y, ind_x] = val
                 stds[ind_x, ind_y] = std

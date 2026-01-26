@@ -6,10 +6,12 @@ from qiskit.quantum_info import (
 )
 from scipy.sparse.linalg import eigsh
 import numpy as np
-from typing import Union
+from typing import Union, Literal
 
 
 import itertools
+
+HAM_NAME_VAR = "__ham_name"
 
 
 def binleftpad(integer: int, left_pad: int):
@@ -110,6 +112,21 @@ def get_singlet_ham(n_qubits: int, J: float) -> SparsePauliOp:
     return hamiltonian
 
 
+def get_tfim_xx(n_qubits: int, which: Literal["even", "odd"]) -> list[SparsePauliOp]:
+    if which == "even":
+        start = 0
+    elif which == "odd":
+        start = 1
+
+    out = []
+    for ind in range(start, n_qubits - 1, 2):
+        idty = ["I" for _ in range(n_qubits)]
+        idty[ind] = "X"
+        idty[ind + 1] = "X"
+        out.append(SparsePauliOp("".join(idty)))
+    return out
+
+
 def get_tfim_ratio(ham: SparsePauliOp) -> float:
     c = ham.coeffs
     u = np.unique_counts(c)
@@ -135,6 +152,7 @@ def TFIM(
     periodic: bool = False,
     split_parts: bool = False,
     longitudinal_field: float = 0.0,
+    ladder: bool = False,
 ) -> SparsePauliOp:
 
     hamiltonian_J = sum(
@@ -160,11 +178,39 @@ def TFIM(
             ]
         )
 
+    if ladder:
+        # ladder means you have two 1d tfim connected with XX
+        # so we just create another tfim
+        # and add the ladder rungs
+        # and then we tensor the two tfim with identities so that they match
+        # and pronto
+        hamiltonian2_J, hamiltonian2_h = TFIM(
+            n_qubits=n_qubits,
+            h=h,
+            J=J,
+            periodic=periodic,
+            split_parts=True,
+            longitudinal_field=longitudinal_field,
+            ladder=False,
+        )
+        cross_J = 0
+        for q in range(n_qubits):
+            idty = ["I" for _ in range(2 * n_qubits)]
+            idty[q] = "X"
+            idty[q + n_qubits] = "X"
+            cross_J += -J * SparsePauliOp("".join(idty))
+        idty = SparsePauliOp("I" * n_qubits)
+
+        hamiltonian_h = hamiltonian_h ^ idty + idty ^ hamiltonian2_h
+        hamiltonian_J = hamiltonian_J ^ idty + idty ^ hamiltonian2_J + cross_J
+
     if split_parts:
         # J: XX h: Z
         return hamiltonian_J, hamiltonian_h
 
     hamiltonian = hamiltonian_J + hamiltonian_h
+
+    hamiltonian.__dict__[HAM_NAME_VAR] = "TFIM"
 
     return hamiltonian
 

@@ -55,22 +55,24 @@ def heff_n_expectation_values_1d(n_qubits: int) -> int:
         total += sum([overlap, expectations, gs])
     return total
 
+
 def heff_n_expectation_values_2d(n_qubits: int) -> int:
     total = 0
-    
+
     # 1D chains: only two largest
     for m in (n_qubits - 1, n_qubits):
         q = m
         total += 2 * q**2 + q + 4 * sum(range(1, q)) + 1
-    
+
     # 2D rectangles: m >= n >= 2, boundary only
     for m in range(2, n_qubits + 1):
         for n in range(2, m + 1):
             if m * n <= n_qubits and (m + 2) * (n + 2) > n_qubits:
                 q = m * n
                 total += 2 * q**2 + q + 4 * sum(range(1, q)) + 1
-    
+
     return total
+
 
 # def heff_n_expectation_values_1d(n_qubits: int) -> int:
 #     ...

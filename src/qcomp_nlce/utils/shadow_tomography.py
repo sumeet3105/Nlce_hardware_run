@@ -7,16 +7,28 @@ from qiskit.quantum_info import SparsePauliOp
 from qcomp_nlce.utils.folders import res_sim_dir
 from pathlib import Path
 from qcomp_nlce.utils.save import load_optimized_vqe
-from qcomp_nlce.utils.circuit import apply_parameters, circuit_matrix_elements
+from qcomp_nlce.utils.circuit import (
+    apply_parameters,
+    circuit_matrix_elements,
+    prep_circ_superpos,
+    circ_ham_expectation_values,
+)
 from qcomp_nlce.utils.hardware import (
     BACKEND_ALIAS,
+    PROVIDER_ALIAS,
+    BACKEND_TYPES,
     get_backend_sampler,
     get_appropriate_fake_backend,
     compile_circuit_for_backend,
 )
 from qiskit_ibm_transpiler import generate_ai_pass_manager
-from qcomp_nlce.utils.hamiltonian import projector_ham, trace_dist
+from qcomp_nlce.utils.hamiltonian import (
+    projector_ham,
+    trace_dist,
+    index_bits,
+)
 from qcomp_nlce.utils.statevector import hamming_weight_states
+from qcomp_nlce.utils.stats import sum_std
 import numpy as np
 
 
@@ -155,6 +167,118 @@ def backend_classical_shadows_matrix_elements(
     return out, stds
 
 
+def classical_shadow_expectation(
+    observable: SparsePauliOp,
+    circuits: QuantumCircuit | list[QuantumCircuit],
+    n_shots: int,
+    sampler,
+):
+    shadow_norm, chunk_size = shadow_bound(1e-2, [o.to_matrix() for o in observable])
+    print(f"Number of samples needed: {shadow_norm:.5f}")
+
+    n_qubits = observable.num_qubits
+    povm = ClassicalShadows(n_qubits)
+    povm_sampler = POVMSampler(sampler)
+    if not isinstance(circuits, list):
+        circuits = [circuits]
+    jobs = povm_sampler.run(circuits, povm=povm, shots=n_shots)
+
+    out = np.zeros(len(circuits))
+    stds = np.zeros(len(circuits))
+    result = jobs.result()
+    for jj in range(len(out)):
+
+        post_processor = POVMPostProcessor(result[jj])
+        val, std = post_processor.get_expectation_value(observable)
+        out[jj] = val
+        stds[jj] = std
+    return out, stds
+
+
+def backend_classical_shadows_expectations(
+    hamiltonian: SparsePauliOp,
+    circuit: QuantumCircuit,
+    states: list[str],
+    which_backend: BACKEND_TYPES,
+    provider_name: PROVIDER_ALIAS,
+    n_shots: int = 16,
+):
+
+    out = np.zeros((len(states), len(states)), dtype=complex)
+    stds = np.zeros((len(states), len(states)), dtype=complex)
+
+    for ind_x, x in enumerate(states):
+        for ind_y, y in enumerate(states):
+            expectation, std = classical_shadow_hamiltonian_element(
+                hamiltonian,
+                circuit,
+                x,
+                y,
+                which_backend,
+                provider_name,
+                n_shots,
+            )
+            out[ind_x, ind_y] = expectation
+            stds[ind_x, ind_y] = std
+
+    return out, stds
+
+
+def classical_shadow_hamiltonian_element(
+    hamiltonian: SparsePauliOp,
+    circuit: QuantumCircuit,
+    x: str,
+    y: str,
+    which_backend: BACKEND_TYPES,
+    provider_name: PROVIDER_ALIAS,
+    n_shots: int,
+) -> tuple[complex, complex]:
+
+    if which_backend == "statevector":
+
+        sampler = StatevectorSampler()
+    else:
+        backend = get_appropriate_fake_backend(circuit.num_qubits, provider_name)
+        sampler = get_backend_sampler(backend)
+
+    if x == y:
+        circ_out = QuantumCircuit(circuit.num_qubits)
+        x_inds = index_bits(x, circuit.num_qubits, right_to_left=True)
+        for x_ind in x_inds:
+            circ_out.x(x_ind)
+        circ_out.compose(circuit, inplace=True)
+
+        if which_backend != "statevector":
+            circ_out = compile_circuit_for_backend(
+                circ_out, backend, {"optimization_level": 3}, False
+            )
+
+        vals, stds = classical_shadow_expectation(
+            hamiltonian, circ_out, n_shots, sampler
+        )
+
+        return vals[0], stds[0]
+
+    else:
+        d = ["+", "-", "+i", "-i"]
+        circs = []
+        for k in d:
+            circ_p = prep_circ_superpos(x, y, k)
+            circ_p.compose(circuit, inplace=True)
+            if which_backend != "statevector":
+                circ_p = compile_circuit_for_backend(
+                    circ_p, backend, {"optimization_level": 3}, False
+                )
+            circs.append(circ_p)
+
+        vals, stds = classical_shadow_expectation(hamiltonian, circs, n_shots, sampler)
+
+        expectation = (vals[0] - vals[1]) / 2 + 1j * (vals[2] - vals[3]) / 2
+        std = sum_std(stds[0:2]) + 1j * sum_std(stds[2:4])
+
+        return expectation, std
+
+
 # from https://pennylane.ai/qml/demos/tutorial_classical_shadows
 def shadow_bound(error: float, observables: list[np.ndarray], failure_rate=0.01):
     """
@@ -207,7 +331,7 @@ def compare_elem_gs():
 
     hamiltonian, circ, weights, ground_energy = load_optimized_vqe(elem_dirname_l)
     circ = apply_parameters(circ, weights[-1])
-    provider_name = "IQM"
+    provider_name = "QEXA"
     backend = get_appropriate_fake_backend(hamiltonian.num_qubits, provider_name)
     be_outs, be_stds = backend_classical_shadows_matrix_elements(circ, backend, n_shots)
     sv_outs, sv_stds = backend_classical_shadows_matrix_elements(
@@ -222,5 +346,34 @@ def compare_elem_gs():
     ...
 
 
+def compare_expec_gs():
+    elem_dirname_l = Path(res_sim_dir(), f"elem_vqe_100j/vqe/cost_offdiag/5q_3l")
+    n_shots = int(1e4)
+
+    hamiltonian, circ, weights, ground_energy = load_optimized_vqe(elem_dirname_l)
+    circ = apply_parameters(circ, weights[-1])
+    provider_name = "IBM"
+
+    comp_states = hamming_weight_states(circ.num_qubits, 1)
+    true_comp_vals = circ_ham_expectation_values(hamiltonian, circ, comp_states)
+
+    be_outs, be_stds = backend_classical_shadows_expectations(
+        hamiltonian, circ, comp_states, "fake_backend", provider_name, n_shots
+    )
+
+    sv_outs, sv_stds = backend_classical_shadows_expectations(
+        hamiltonian, circ, comp_states, "statevector", provider_name, n_shots
+    )
+
+    print("sv-true", trace_dist(sv_outs, true_comp_vals))
+    print("be-true", trace_dist(be_outs, true_comp_vals))
+
+    print(np.array_str(true_comp_vals, precision=3, suppress_small=True))
+    print(np.array_str(be_outs, precision=3, suppress_small=True))
+    print(np.array_str(sv_outs, precision=3, suppress_small=True))
+
+    ...
+
+
 if __name__ == "__main__":
-    compare_elem_gs()
+    compare_expec_gs()

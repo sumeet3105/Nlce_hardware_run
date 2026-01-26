@@ -42,7 +42,7 @@ from iqm.qiskit_iqm.iqm_job import IQMJob
 
 
 def circuit_estimation_job(
-    circuit: QuantumCircuit,
+    circuit: QuantumCircuit | list[QuantumCircuit],
     observables: Union[SparsePauliOp, list[SparsePauliOp]],
     parameters: np.ndarray,
     backend: BACKEND_ALIAS = "statevector",
@@ -61,6 +61,36 @@ def circuit_estimation_job(
             n_shots=n_shots,
         )
     return job
+
+
+def trace_out_estimation(counts: dict, ind: int) -> tuple[float, float]:
+    assert all(ind < len(k) for k in counts.keys())
+    count_0 = 0
+    count_1 = 0
+    for k in counts.keys():
+        # random spaces in my bitstrings?
+        ks = k.replace(" ", "")
+        if ks[ind] == "0":
+            count_0 += counts[k]
+        elif ks[ind] == "1":
+            count_1 += counts[k]
+        else:
+            raise ValueError(
+                f"Expected bitstring to be either zeros or ones, got {k[ind]}"
+            )
+    return (count_0 - count_1) / (count_0 + count_1), std_from_shots(
+        count_1, count_0, count_0 + count_1
+    )
+
+
+def std_from_shots(n_1: int, n_0: int, n_shots: int) -> float:
+    if n_1 == 0 and n_0 == 0:
+        return 0
+    # <(Z x |0X0|)^2> - <(Z x |0X0|)>^2
+    # or simply <Z^2> - <Z>^2
+    t1 = (n_0 + n_1) / n_shots
+    t2 = ((n_0 - n_1) / (n_shots)) ** 2
+    return np.sqrt(t1 - t2)
 
 
 def circuit_sampling_job(
