@@ -36,6 +36,14 @@ def get_optimal_n_layers(n_qubits: int) -> int:
 def get_hva_vqe(
     hamiltonian: SparsePauliOp, n_layers: int, unique_weights: bool = False
 ) -> QuantumCircuit:
+    """
+    Create HVA (Hamiltonian Variational Ansatz) circuit.
+
+    Args:
+        hamiltonian: The Hamiltonian whose terms define the ansatz structure
+        n_layers: Number of layers
+        unique_weights: If True, each term gets a unique parameter
+    """
     if unique_weights:
         circuit = QuantumCircuit(hamiltonian.num_qubits)
         for layer in range(n_layers):

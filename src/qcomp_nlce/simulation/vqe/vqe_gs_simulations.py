@@ -15,7 +15,7 @@ def train_and_save(n_qubits: int, J: float, dirname: str, dry_run: bool):
     periodic = False
     h = 1
     hamiltonian = TFIM(n_qubits, h, J, periodic=periodic, longitudinal_field=0.1)
-    n_layers = 2*get_optimal_n_layers(hamiltonian.num_qubits)
+    n_layers = get_optimal_n_layers(hamiltonian.num_qubits)
 
     circuit = get_hva_vqe(hamiltonian, n_layers=n_layers, unique_weights=True)
     # circuit = get_custom_vqe(4, n_layers=2)

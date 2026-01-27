@@ -154,7 +154,17 @@ def TFIM(
     longitudinal_field: float = 0.0,
     ladder: bool = False,
 ) -> SparsePauliOp:
+    """
+    Transverse-field Ising model Hamiltonian.
 
+    H = -J * sum_{<i,j>} X_i X_j - h * sum_i Z_i - hl * sum_i X_i
+
+    Term ordering (for HVA ansatz compatibility with Julia):
+    1. XX bonds in order: (0,1), (1,2), (2,3), ...
+    2. X longitudinal field terms: qubit 0, 1, 2, ... (if hl != 0)
+    3. Z transverse field terms: qubit 0, 1, 2, ...
+    """
+    # Build XX coupling terms
     hamiltonian_J = sum(
         [
             -J * SparsePauliOp(s * "I" + "XX" + (n_qubits - 2 - s) * "I")
@@ -162,15 +172,12 @@ def TFIM(
         ]
     )
     if periodic:
-        hamiltonian_J += SparsePauliOp("X" + "I" * (n_qubits - 2) + "X")
-    hamiltonian_h = sum(
-        [
-            -h * SparsePauliOp(s * "I" + "Z" + (n_qubits - 1 - s) * "I")
-            for s in range(n_qubits)
-        ]
-    )
+        hamiltonian_J += -J * SparsePauliOp("X" + "I" * (n_qubits - 2) + "X")
+
+    # Build X longitudinal field terms (if any)
+    hamiltonian_hl = None
     if longitudinal_field != 0.0:
-        hamiltonian_J += sum(
+        hamiltonian_hl = sum(
             [
                 -longitudinal_field
                 * SparsePauliOp(s * "I" + "X" + (n_qubits - 1 - s) * "I")
@@ -178,6 +185,16 @@ def TFIM(
             ]
         )
 
+
+    # Build Z transverse field terms
+    hamiltonian_h = sum(
+        [
+            -h * SparsePauliOp(s * "I" + "Z" + (n_qubits - 1 - s) * "I")
+            for s in range(n_qubits)
+        ]
+    )
+
+    
     if ladder:
         # ladder means you have two 1d tfim connected with XX
         # so we just create another tfim
@@ -203,12 +220,20 @@ def TFIM(
 
         hamiltonian_h = hamiltonian_h ^ idty + idty ^ hamiltonian2_h
         hamiltonian_J = hamiltonian_J ^ idty + idty ^ hamiltonian2_J + cross_J
+        if hamiltonian_hl is not None:
+            hamiltonian_J += hamiltonian_hl
 
     if split_parts:
-        # J: XX h: Z
+        # J: XX (+ X if hl), h: Z
+        if hamiltonian_hl is not None:
+            hamiltonian_J += hamiltonian_hl
         return hamiltonian_J, hamiltonian_h
 
-    hamiltonian = hamiltonian_J + hamiltonian_h
+    # Combine in order: XX, X (if any), Z - matching Julia's Gates_tl order
+    if hamiltonian_hl is not None:
+        hamiltonian = hamiltonian_J + hamiltonian_hl + hamiltonian_h
+    else:
+        hamiltonian = hamiltonian_J + hamiltonian_h
 
     hamiltonian.__dict__[HAM_NAME_VAR] = "TFIM"
 

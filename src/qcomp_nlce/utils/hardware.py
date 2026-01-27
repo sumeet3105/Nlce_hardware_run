@@ -68,7 +68,6 @@ except ModuleNotFoundError:
 
 
 try:
-    raise Exception
     from mqp.qiskit_provider import MQPProvider, MQPBackend
 
 except Exception:
@@ -83,7 +82,10 @@ except Exception:
         MQPBackend = MQSSQiskitBackend
     except ModuleNotFoundError as e:
         print("Neither MQSS nor MQP working")
-        raise e
+
+        class MQPProvider: ...
+
+        class MQPBackend: ...
 
 
 class NotABackend: ...
@@ -218,16 +220,23 @@ def get_appropriate_fake_backend(
 
 def mean_std_tuples_from_res(
     res: EstimatorResult | PrimitiveResult,
+    n_shots: int = None,
 ) -> list[tuple[complex, float]]:
 
     out = []
     if isinstance(res, EstimatorResult):
         for m, s in zip(res.values, res.metadata):
-            out.append((m, s["variance"] ** (0.5)))
+            std = s["variance"] ** (0.5)
+            if n_shots is not None:
+                std = std / np.sqrt(n_shots)  # Convert to SEM
+            out.append((m, std))
     elif isinstance(res, PrimitiveResult):
         for k in res:
             for m, s in zip(k.data.evs, k.data.stds):
-                out.append((m, s))
+                std = s
+                if n_shots is not None:
+                    std = std / np.sqrt(n_shots)  # Convert to SEM
+                out.append((m, std))
     return out
 
 

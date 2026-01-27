@@ -68,7 +68,7 @@ def measure_ground_state_energy_estimator(
             circuit=circuit,
             n_shots=n_shots,
         )
-        energy, std = mean_std_tuples_from_res(job.result())[0]
+        energy, std = mean_std_tuples_from_res(job.result(), n_shots=n_shots)[0]
         bn = backend.name
     elif which_backend == "statevector_shots":
         res0 = sv_estimate_observables(
@@ -103,7 +103,7 @@ def measure_ground_state_energy_estimator(
             n_shots=n_shots,
         )
 
-        energy, std = mean_std_tuples_from_res(job.result())[0]
+        energy, std = mean_std_tuples_from_res(job.result(), n_shots=n_shots)[0]
         bn = backend.name
 
     print(f"{bn} -- estimated energy: {energy:.5f}, err {relerr(energy):.5f}")
